@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     libsm6 \
     libxext6 \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -30,6 +31,7 @@ RUN chmod +x setup.sh run.sh
 ENV PYTHONUNBUFFERED=1
 ENV HOST=0.0.0.0
 ENV PORT=8000
+ENV GEMINI_MODEL=models/gemini-2.0-flash-exp
 
 # Expose port for WebSocket server
 EXPOSE 8000
