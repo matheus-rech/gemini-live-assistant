@@ -5,6 +5,7 @@ import signal
 import sys
 import traceback
 import logging
+import datetime
 from typing import Set, Dict, Any, List, Optional
 from datetime import datetime
 
@@ -98,6 +99,38 @@ class SessionManager:
         for client_id in expired_clients:
             logger.info(f"Removing expired session for client {client_id}")
             self.destroy_session(client_id)
+    
+    def check_session_duration(self, client_id: str) -> bool:
+        """
+        Check if a session has exceeded the maximum duration limit.
+        
+        Args:
+            client_id: The client ID to check
+            
+        Returns:
+            True if session is still valid, False if it has expired
+        """
+        if client_id not in self.sessions:
+            return False
+        
+        session = self.sessions[client_id]
+        
+        # Get session start time
+        created_at = session["created_at"]
+        
+        # Check if the session has video mode
+        has_video = session["user_preferences"].get("mode") in ("camera", "screen")
+        
+        # Max duration: 15 minutes for audio, 2 minutes for audio+video
+        max_duration = datetime.timedelta(minutes=2 if has_video else 15)
+        
+        # Check if session has exceeded maximum duration
+        current_time = datetime.now()
+        if current_time - created_at > max_duration:
+            logger.warning(f"Session {client_id} has exceeded maximum duration limit of {max_duration}")
+            return False
+        
+        return True
 
 
 # Create a global session manager
@@ -152,29 +185,30 @@ class WebSocketAudioLoop(AudioLoop):
             
             # Process with Gemini
             start_time = datetime.now().timestamp()
-            response = await asyncio.to_thread(
-                self.connect.send,
-                text
-            )
             
-            # Extract response text
-            response_text = ""
-            for chunk in response:
-                if chunk.text:
-                    response_text += chunk.text
+            # Initialize Gemini session if needed
+            if not self.connect:
+                await self.initialize_gemini_session()
             
-            # Send response to client
-            if response_text:
-                await self.send_response(response_text)
-                
-                # Log processing time
-                processing_time = datetime.now().timestamp() - start_time
-                logger.info(f"Text processed in {processing_time:.2f}s")
-                
-                # Update performance metrics
-                self.performance_metrics["api_response_time"].append(processing_time)
-            else:
-                await self.send_response("I didn't generate a response. Please try again.")
+            # Send input to Gemini
+            await self.connect.send(input=text, end_of_turn=True)
+            
+            # Process response
+            async for response in self.connect.receive():
+                if response.text:
+                    await self.send_response(response.text)
+                elif hasattr(response, 'tool_call'):
+                    await self.process_tool_call(response.tool_call)
+                elif hasattr(response, 'server_content') and hasattr(response.server_content, 'interrupted') and response.server_content.interrupted:
+                    await self.send_response("Generation interrupted by user", "status")
+            
+            # Log processing time
+            processing_time = datetime.now().timestamp() - start_time
+            logger.info(f"Text processed in {processing_time:.2f}s")
+            
+            # Update performance metrics
+            self.performance_metrics["api_response_time"].append(processing_time)
+            
         except Exception as e:
             logger.error(f"Error processing text: {e}")
             await self.send_response(f"Error processing your message: {str(e)}", "error")
@@ -209,31 +243,28 @@ class WebSocketAudioLoop(AudioLoop):
             # Create part with image MIME type
             part = types.Part.blob(img_bytes, 'image/png')
             
+            # Initialize Gemini session if needed
+            if not self.connect:
+                await self.initialize_gemini_session()
+                
             # Send to model
             start_time = datetime.now().timestamp()
-            response = await asyncio.to_thread(
-                self.connect.send,
-                part
-            )
+            await self.connect.send(input=part, end_of_turn=True)
             
-            # Extract response text
-            response_text = ""
-            for chunk in response:
-                if chunk.text:
-                    response_text += chunk.text
+            # Process response
+            async for response in self.connect.receive():
+                if response.text:
+                    await self.send_response(response.text)
+                elif hasattr(response, 'tool_call'):
+                    await self.process_tool_call(response.tool_call)
             
-            # Send response to client
-            if response_text:
-                await self.send_response(response_text)
-                
-                # Log processing time
-                processing_time = datetime.now().timestamp() - start_time
-                logger.info(f"Image processed in {processing_time:.2f}s")
-                
-                # Update performance metrics
-                self.performance_metrics["api_response_time"].append(processing_time)
-            else:
-                await self.send_response("I couldn't analyze this image. Please try another one.")
+            # Log processing time
+            processing_time = datetime.now().timestamp() - start_time
+            logger.info(f"Image processed in {processing_time:.2f}s")
+            
+            # Update performance metrics
+            self.performance_metrics["api_response_time"].append(processing_time)
+            
         except Exception as e:
             logger.error(f"Error processing image: {e}")
             await self.send_response(f"Error processing your image: {str(e)}", "error")
@@ -260,43 +291,102 @@ class WebSocketAudioLoop(AudioLoop):
             # Create part with audio MIME type
             audio_part = types.Part.audio(audio_bytes, mime_type="audio/raw;encoding=signed-integer;bits_per_sample=16;sample_rate=16000")
             
+            # Initialize Gemini session if needed
+            if not self.connect:
+                await self.initialize_gemini_session()
+                
             # Send to model
             start_time = datetime.now().timestamp()
-            response = await asyncio.to_thread(
-                self.connect.send,
-                audio_part
-            )
+            await self.connect.send(input=audio_part, end_of_turn=True)
             
-            # Extract response text and audio
-            response_text = ""
-            for chunk in response:
-                if chunk.text:
-                    response_text += chunk.text
+            # Process response
+            text_response = ""
+            async for response in self.connect.receive():
+                if response.text:
+                    text_response += response.text
+                    await self.send_response(response.text)
+                elif response.data:
+                    # Send audio data back to client
+                    await self.send_response(base64.b64encode(response.data).decode(), "audio")
+                elif hasattr(response, 'tool_call'):
+                    await self.process_tool_call(response.tool_call)
             
-            # Send text response to client
-            if response_text:
-                await self.send_response(response_text)
-                
-                # Log processing time
-                processing_time = datetime.now().timestamp() - start_time
-                logger.info(f"Audio processed in {processing_time:.2f}s")
-                
-                # Update performance metrics
-                self.performance_metrics["api_response_time"].append(processing_time)
-                
-                # Also send a response with Gemini's audio output
-                # In a real implementation, this would be generated from text-to-speech
-                # or retrieved from the Gemini LiveConnect response
-                mock_audio_base64 = "UklGRiQEAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAEAAD+/wIA..."  # Truncated
-                
-                # Send audio data back to client
-                await self.send_response(mock_audio_base64, "audio")
-            else:
-                await self.send_response("I couldn't understand the audio. Please try again.")
+            # Log processing time
+            processing_time = datetime.now().timestamp() - start_time
+            logger.info(f"Audio processed in {processing_time:.2f}s")
+            
+            # Update performance metrics
+            self.performance_metrics["api_response_time"].append(processing_time)
+            
         except Exception as e:
             logger.error(f"Error processing audio: {e}")
             await self.send_response(f"Error processing your audio: {str(e)}", "error")
             self.performance_metrics["api_errors"] += 1
+    
+    async def process_tool_call(self, tool_call):
+        """Process tool call from Gemini and relay to client."""
+        try:
+            logger.info(f"Received tool call from Gemini: {tool_call}")
+            
+            # Extract function calls information
+            function_calls = []
+            if hasattr(tool_call, 'function_calls'):
+                function_calls = tool_call.function_calls
+            elif isinstance(tool_call, dict) and 'function_calls' in tool_call:
+                function_calls = tool_call['function_calls']
+            
+            if not function_calls:
+                logger.warning("Received empty tool call")
+                return
+            
+            # Send tool call to client
+            await self.websocket.send(json.dumps({
+                "type": "tool_call",
+                "content": {
+                    "function_calls": [
+                        {
+                            "id": call.id if hasattr(call, 'id') else call.get('id'),
+                            "name": call.name if hasattr(call, 'name') else call.get('name'),
+                            "args": call.args if hasattr(call, 'args') else call.get('args')
+                        } for call in function_calls
+                    ]
+                }
+            }))
+            
+            # Client will respond with tool_response message type
+            # This will be handled in the process_message function
+            
+        except Exception as e:
+            logger.error(f"Error processing tool call: {e}")
+            traceback.print_exc()
+            await self.send_response(f"Error processing tool call: {str(e)}", "error")
+    
+    async def process_tool_response(self, function_responses):
+        """Process tool responses from client and send to Gemini."""
+        try:
+            logger.info(f"Processing tool responses: {function_responses}")
+            
+            if not self.connect:
+                await self.initialize_gemini_session()
+            
+            # Send tool responses to Gemini
+            await self.connect.send_tool_response(function_responses=function_responses)
+            
+            # Continue processing responses
+            async for response in self.connect.receive():
+                if response.text:
+                    await self.send_response(response.text)
+                elif response.data:
+                    # Send audio data back to client
+                    import base64
+                    await self.send_response(base64.b64encode(response.data).decode(), "audio")
+                elif hasattr(response, 'tool_call'):
+                    await self.process_tool_call(response.tool_call)
+            
+        except Exception as e:
+            logger.error(f"Error processing tool response: {e}")
+            traceback.print_exc()
+            await self.send_response(f"Error processing tool response: {str(e)}", "error")
 
 
 async def handle_client(websocket: WebSocketServerProtocol, path: str) -> None:
@@ -352,6 +442,14 @@ async def handle_client(websocket: WebSocketServerProtocol, path: str) -> None:
         async for message in websocket:
             try:
                 data = json.loads(message)
+                
+                # Check session duration first
+                if not session_manager.check_session_duration(client_id):
+                    await websocket.send(json.dumps({
+                        "type": "error",
+                        "content": "Session duration limit exceeded. Please reconnect to start a new session."
+                    }))
+                    break
                 
                 # Add timeout protection
                 try:
@@ -413,6 +511,33 @@ async def process_message(websocket: WebSocketServerProtocol, data: Dict[str, An
         # Process image data
         logger.info(f"Received image data from client {client_id}")
         await client_app.process_image(content)
+    
+    elif msg_type == 'tool_response':
+        # Process tool response from client
+        logger.info(f"Received tool response from client {client_id}")
+        
+        try:
+            # Extract function responses
+            function_responses = []
+            if isinstance(content, list):
+                function_responses = content
+            elif isinstance(content, dict) and 'function_responses' in content:
+                function_responses = content['function_responses']
+            
+            if not function_responses:
+                logger.warning(f"Received empty tool response from client {client_id}")
+                return
+            
+            # Send tool response to Gemini
+            await client_app.process_tool_response(function_responses)
+                
+        except Exception as e:
+            logger.error(f"Error processing tool response: {e}")
+            traceback.print_exc()
+            await websocket.send(json.dumps({
+                "type": "error",
+                "content": f"Error processing tool response: {str(e)}"
+            }))
     
     elif msg_type == 'mode':
         # Change the mode (camera, screen, none)
