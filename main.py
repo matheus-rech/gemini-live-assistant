@@ -8,6 +8,7 @@ import argparse
 import io
 import logging
 import json
+import re
 from typing import List, Optional, Tuple, Dict, Any, Union
 
 import cv2
@@ -36,6 +37,12 @@ DEFAULT_MODE = "camera"
 CAPTURE_INTERVAL_MIN = 0.05  # min time between captures (seconds)
 CAPTURE_INTERVAL_MAX = 0.5   # max time between captures (seconds)
 DEFAULT_CAPTURE_INTERVAL = 0.2  # initial capture interval
+
+# ADHD support settings
+ADHD_SUPPORT_ENABLED = True
+FOCUS_ENHANCEMENT_LEVEL = 2  # 1-3 scale for focus enhancement intensity
+READING_PACE = "moderate"     # slow, moderate, fast
+NOTIFICATION_STYLE = "subtle" # none, subtle, prominent
 
 # API key management
 API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -76,6 +83,28 @@ TOOLS = [
                         }
                     },
                     "required": ["time"]
+                }
+            },
+            {
+                "name": "create_flashcard",
+                "description": "Create a flashcard for study purposes",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "front": {
+                            "type": "string",
+                            "description": "Content for the front of the flashcard (question)"
+                        },
+                        "back": {
+                            "type": "string",
+                            "description": "Content for the back of the flashcard (answer)"
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Medical category for the flashcard"
+                        }
+                    },
+                    "required": ["front", "back"]
                 }
             }
         ]
@@ -126,6 +155,13 @@ General guidelines:
 - Don't make up information if you're uncertain.
 - Respond conversationally and naturally.
 - If the user asks you to remember something, do your best to keep it in mind.
+
+Special Educational Support (ADHD):
+- When assisting with studying, maintain a structured, engaging approach
+- For medical content, be exceptionally precise with terminology
+- During flashcard sessions, provide clear feedback and encouragement
+- Adjust reading pace and tone to maintain engagement
+- Highlight important concepts and provide context when needed
 """
 
 class ScreenCapture:
@@ -151,6 +187,7 @@ class ScreenCapture:
         self.max_width = max_width
         self.last_capture_time = 0
         self.last_image_hash = None
+        self.last_image = None
         self.text_region_cache = {}
         self.performance_metrics = {
             "capture_times": [],
@@ -275,6 +312,108 @@ class ScreenCapture:
             # Return original if enhancement fails
             return image
     
+    def enhance_medical_text(self, image: Image.Image) -> Image.Image:
+        """
+        Enhance image to improve medical text recognition.
+        
+        Args:
+            image: Original PIL Image
+            
+        Returns:
+            Enhanced PIL Image optimized for medical terminology
+        """
+        process_start = time.time()
+        
+        try:
+            # Convert to OpenCV format for processing
+            img_cv = np.array(image)
+            img_cv = img_cv[:, :, ::-1].copy()  # RGB to BGR
+            
+            # Convert to grayscale
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            
+            # Apply adaptive thresholding optimized for medical text
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                         cv2.THRESH_BINARY, 11, 2)
+            
+            # Medical-specific noise reduction while preserving details
+            denoised = cv2.fastNlMeansDenoising(thresh, None, 10, 7, 21)
+            
+            # Convert back to PIL image
+            enhanced = Image.fromarray(denoised)
+            
+            # Log processing time
+            process_time = time.time() - process_start
+            self.performance_metrics["processing_times"].append(process_time)
+            
+            return enhanced
+            
+        except Exception as e:
+            logger.error(f"Error enhancing medical text: {e}")
+            # Return original if enhancement fails
+            return image
+    
+    def enhance_focus_region(self, image: Image.Image, region_of_interest: Tuple[int, int, int, int]) -> Image.Image:
+        """
+        Apply visual highlighting to focus area for ADHD support.
+        
+        Args:
+            image: Original PIL Image
+            region_of_interest: (x, y, width, height) of focus region
+            
+        Returns:
+            Image with enhanced focus region
+        """
+        try:
+            # Convert to OpenCV format
+            img_cv = np.array(image)
+            img_cv = img_cv[:, :, ::-1].copy()  # RGB to BGR
+            
+            # Create mask for focus area
+            mask = np.zeros(img_cv.shape[:2], dtype=np.uint8)
+            x, y, w, h = region_of_interest
+            mask[y:y+h, x:x+w] = 255
+            
+            # Enhance contrast in focus area
+            focused_region = cv2.bitwise_and(img_cv, img_cv, mask=mask)
+            
+            # Apply enhancement based on configured level
+            if FOCUS_ENHANCEMENT_LEVEL >= 2:
+                # Increase contrast in focus area
+                lab = cv2.cvtColor(focused_region, cv2.COLOR_BGR2LAB)
+                l, a, b = cv2.split(lab)
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                cl = clahe.apply(l)
+                enhanced_lab = cv2.merge((cl, a, b))
+                focused_region = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+            
+            # Reduce visual noise outside focus area
+            background = cv2.bitwise_and(img_cv, img_cv, mask=cv2.bitwise_not(mask))
+            
+            # Adjust blur based on enhancement level
+            blur_amount = 21
+            if FOCUS_ENHANCEMENT_LEVEL == 1:
+                blur_amount = 11
+            elif FOCUS_ENHANCEMENT_LEVEL == 3:
+                blur_amount = 31
+                
+            background = cv2.GaussianBlur(background, (blur_amount, blur_amount), 0)
+            
+            # Reduce opacity of background based on enhancement level
+            if FOCUS_ENHANCEMENT_LEVEL >= 2:
+                background = cv2.addWeighted(background, 0.7, np.zeros_like(background), 0, 0)
+            
+            # Combine for ADHD-optimized viewing
+            result = cv2.add(focused_region, background)
+            
+            # Convert back to PIL
+            enhanced = Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+            return enhanced
+            
+        except Exception as e:
+            logger.error(f"Error enhancing focus region: {e}")
+            return image
+    
     async def detect_text_regions(self, image: Image.Image) -> List[Tuple[int, int, int, int]]:
         """
         Enhanced method to detect regions in the image that likely contain text.
@@ -353,6 +492,231 @@ class ScreenCapture:
         except Exception as e:
             logger.error(f"Error detecting text regions: {e}")
             return []
+    
+    def detect_content_regions(self, image: Image.Image) -> List[Dict[str, Any]]:
+        """
+        Detect and classify content regions in medical study materials.
+        
+        Args:
+            image: PIL Image of screen content
+            
+        Returns:
+            List of region dictionaries with type classification
+        """
+        try:
+            # Convert to OpenCV format
+            img_cv = np.array(image)
+            img_cv = img_cv[:, :, ::-1].copy()  # RGB to BGR
+            
+            # Convert to grayscale
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            
+            # Apply preprocessing to improve region detection
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                          cv2.THRESH_BINARY_INV, 11, 2)
+            
+            # Perform morphological operations to enhance text regions
+            kernel = np.ones((5, 5), np.uint8)
+            dilated = cv2.dilate(thresh, kernel, iterations=2)
+            
+            # Find contours for content blocks
+            contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Process and filter contours to identify content blocks
+            content_regions = []
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                
+                # Filter small regions
+                if w < 100 or h < 20:
+                    continue
+                    
+                # Classify region type based on position and characteristics
+                region_type = self._classify_region_type(img_cv[y:y+h, x:x+w], x, y, image.width, image.height)
+                
+                content_regions.append({
+                    "coords": (x, y, w, h),
+                    "type": region_type,
+                    "area": w * h
+                })
+            
+            # Sort by vertical position (top to bottom)
+            content_regions.sort(key=lambda r: r["coords"][1])
+            
+            return content_regions
+            
+        except Exception as e:
+            logger.error(f"Error detecting content regions: {e}")
+            return []
+    
+    def _classify_region_type(self, region_img, x, y, img_width, img_height):
+        """
+        Classify the type of content region (question, answer, figure, etc.)
+        """
+        # Simple heuristic classification based on position and content
+        region_height = region_img.shape[0]
+        region_width = region_img.shape[1]
+        
+        # Check for question markers (Q:, 1., etc.)
+        question_markers = self._detect_question_markers(region_img)
+        
+        # Check for answer markers (A:, ans:, etc.)
+        answer_markers = self._detect_answer_markers(region_img)
+        
+        # Calculate relative position (useful for flashcards/split screens)
+        relative_y = y / img_height
+        
+        if question_markers:
+            return "question"
+        elif answer_markers:
+            return "answer"
+        elif region_height > 100 and region_width > 200:
+            if relative_y < 0.4:
+                return "header"
+            elif relative_y > 0.7:
+                return "footer"
+            else:
+                return "content"
+        else:
+            return "unknown"
+    
+    def _detect_question_markers(self, region_img):
+        """Detect markers indicating a question"""
+        # Convert region to grayscale
+        gray = cv2.cvtColor(region_img, cv2.COLOR_BGR2GRAY) if len(region_img.shape) > 2 else region_img
+        
+        # Apply binary thresholding for clearer text
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Simple template matching approach for common question markers
+        # For a real application, you'd use a proper OCR here
+        # This is a simplified implementation
+        
+        # Check for "Q" or "1." like patterns
+        # Using simple structural analysis
+        left_aligned = np.sum(thresh[:, :20] == 0) > np.sum(thresh[:, 20:40] == 0)
+        
+        # Numbers 1-9 followed by period or parenthesis pattern
+        digit_pattern = self._has_digit_pattern(thresh)
+        
+        return left_aligned and digit_pattern
+
+    def _detect_answer_markers(self, region_img):
+        """Detect markers indicating an answer"""
+        # Convert region to grayscale
+        gray = cv2.cvtColor(region_img, cv2.COLOR_BGR2GRAY) if len(region_img.shape) > 2 else region_img
+        
+        # Apply binary thresholding for clearer text
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Check for "A" or "Answer" patterns
+        # Using simple structural analysis
+        left_aligned = np.sum(thresh[:, :20] == 0) > np.sum(thresh[:, 20:40] == 0)
+        
+        # Check for specific patterns like "A:" or "Answer:"
+        # This is a simplified implementation
+        has_letter_patterns = self._has_letter_pattern(thresh)
+        
+        return left_aligned and has_letter_patterns
+    
+    def _has_digit_pattern(self, binary_image):
+        """
+        Check if the image likely contains a digit pattern 
+        like '1.', '2)', etc. at the beginning
+        
+        This is a simplified approach without full OCR
+        """
+        # Simple structural analysis looking for digit-like patterns
+        # in the first few columns of the image
+        h, w = binary_image.shape
+        
+        # Extract left region where digits would be
+        left_region = binary_image[:, :min(30, w//4)]
+        
+        # Count black pixels
+        black_pixel_count = np.sum(left_region == 0)
+        
+        # Digit patterns typically have a moderate density of black pixels
+        pixel_density = black_pixel_count / (left_region.shape[0] * left_region.shape[1])
+        
+        return 0.05 < pixel_density < 0.3
+    
+    def _has_letter_pattern(self, binary_image):
+        """
+        Check if the image likely contains typical answer markers
+        like 'A)', 'B:', 'Answer:', etc. at the beginning
+        
+        This is a simplified approach without full OCR
+        """
+        # Simple structural analysis looking for letter-like patterns
+        h, w = binary_image.shape
+        
+        # Extract left region where letters would be
+        left_region = binary_image[:, :min(50, w//3)]
+        
+        # Count black pixels
+        black_pixel_count = np.sum(left_region == 0)
+        
+        # Letter patterns typically have a moderate density of black pixels
+        pixel_density = black_pixel_count / (left_region.shape[0] * left_region.shape[1])
+        
+        # Combined with vertical alignment patterns typical of letters
+        # (This is highly simplified)
+        vertical_pattern = np.mean(np.std(left_region, axis=0))
+        
+        return 0.05 < pixel_density < 0.25 and vertical_pattern > 40
+    
+    def detect_page_turn(self, current_frame, previous_frame=None):
+        """
+        Efficiently detect significant content changes like page turns.
+        
+        Args:
+            current_frame: Current screen image
+            previous_frame: Previous screen image
+            
+        Returns:
+            Boolean indicating if a page turn was detected
+        """
+        if previous_frame is None or self.last_image is None:
+            self.last_image = current_frame
+            return False
+            
+        try:
+            # Convert frames to numpy arrays if they're PIL images
+            if isinstance(current_frame, Image.Image):
+                current_np = np.array(current_frame)
+            else:
+                current_np = current_frame
+                
+            if isinstance(previous_frame, Image.Image):
+                previous_np = np.array(previous_frame)
+            else:
+                previous_np = previous_frame
+            
+            # Convert frames to grayscale for faster processing
+            current_gray = cv2.cvtColor(current_np, cv2.COLOR_RGB2GRAY) if len(current_np.shape) > 2 else current_np
+            previous_gray = cv2.cvtColor(previous_np, cv2.COLOR_RGB2GRAY) if len(previous_np.shape) > 2 else previous_np
+            
+            # Resize for faster comparison
+            current_small = cv2.resize(current_gray, (32, 32))
+            previous_small = cv2.resize(previous_gray, (32, 32))
+            
+            # Compute difference
+            diff = cv2.absdiff(current_small, previous_small)
+            
+            # Calculate change percentage
+            change_percentage = np.sum(diff > 30) / diff.size
+            
+            # Update last image
+            self.last_image = current_frame
+            
+            # Return True if change exceeds threshold
+            return change_percentage > 0.3
+            
+        except Exception as e:
+            logger.error(f"Error detecting page turn: {e}")
+            return False
     
     def _merge_overlapping_regions(self, regions: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int, int, int]]:
         """
@@ -464,6 +828,14 @@ class AudioLoop:
         self.audio_in_queue = None
         self.last_capture_time = 0
         self.send_text_task = None
+        self.last_captured_img = None
+        
+        # ADHD support settings
+        self.adhd_support_enabled = ADHD_SUPPORT_ENABLED
+        self.focus_region = None
+        self.is_medical_context = False
+        self.flashcard_mode = False
+        self.current_flashcard = None
         
         # Initialize enhanced screen capture
         self.screen_capture = ScreenCapture(
@@ -576,9 +948,16 @@ class AudioLoop:
                     # Convert to RGB (from BGR) and create PIL Image
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     img = Image.fromarray(frame_rgb)
+                    
+                    # Store last captured image for page turn detection
+                    self.last_captured_img = img
 
                     # Send to Gemini model
                     if self.connect:
+                        # Apply focus enhancement if region is specified (ADHD support)
+                        if self.adhd_support_enabled and self.focus_region:
+                            img = self.screen_capture.enhance_focus_region(img, self.focus_region)
+                        
                         # Convert PIL Image to bytes
                         img_byte_arr = io.BytesIO()
                         img.save(img_byte_arr, format='PNG')
@@ -629,18 +1008,62 @@ class AudioLoop:
                         await asyncio.sleep(0.01)
                         continue
                     
+                    # Check for page turn (for ADHD support and medical education)
+                    page_turn_detected = False
+                    if self.adhd_support_enabled and self.last_captured_img is not None:
+                        page_turn_detected = self.screen_capture.detect_page_turn(img, self.last_captured_img)
+                        
+                        if page_turn_detected and NOTIFICATION_STYLE != "none":
+                            print("\nNew page detected.")
+                            if self.connect and NOTIFICATION_STYLE == "prominent":
+                                await self.connect.send(input="I notice you've turned to a new page. Would you like me to read it?")
+                        
+                    # Store current image for next comparison
+                    self.last_captured_img = img
+                    
                     # Process selected region if specified
                     if self.selected_region:
                         x, y, width, height = self.selected_region
                         img = img.crop((x, y, x + width, y + height))
                     
+                    # For ADHD focus support
+                    if self.adhd_support_enabled and self.focus_region:
+                        img = self.screen_capture.enhance_focus_region(img, self.focus_region)
+                    
                     # Check for recent text reading commands
                     is_text_focused = False
+                    is_medical = self.is_medical_context
+                    
                     if self.last_command_context.get('command_type') == 'read_text':
                         is_text_focused = True
                         # Clear the context after using it
                         if time.time() - self.last_command_context.get('timestamp', 0) > 10:
                             self.last_command_context = {}
+                    
+                    # For medical text detection
+                    if self.last_command_context.get('content_type') == 'medical':
+                        is_medical = True
+                        
+                    # Detect content regions for medical materials
+                    content_regions = []
+                    if is_medical:
+                        content_regions = self.screen_capture.detect_content_regions(img)
+                        
+                        # Extract question/answer regions for flashcard mode
+                        if self.flashcard_mode:
+                            question_regions = [r for r in content_regions if r['type'] == 'question']
+                            answer_regions = [r for r in content_regions if r['type'] == 'answer']
+                            
+                            if question_regions and self.last_command_context.get('command_type') == 'show_question':
+                                # For flashcard question, focus on question region and blur answer
+                                question_region = question_regions[0]['coords']
+                                self.focus_region = question_region
+                                img = self.screen_capture.enhance_focus_region(img, question_region)
+                            elif answer_regions and self.last_command_context.get('command_type') == 'show_answer':
+                                # For flashcard answer, focus on answer region
+                                answer_region = answer_regions[0]['coords']
+                                self.focus_region = answer_region
+                                img = self.screen_capture.enhance_focus_region(img, answer_region)
                     
                     # Detect text regions for text-focused mode
                     text_regions = []
@@ -649,7 +1072,14 @@ class AudioLoop:
                     
                     # Get enhanced version optimized for text recognition
                     enhanced_img = None
-                    if is_text_focused or 'read' in self.last_command_context.get('command', '').lower():
+                    if is_text_focused:
+                        if is_medical:
+                            # Use specialized medical text enhancement
+                            enhanced_img = self.screen_capture.enhance_medical_text(img)
+                        else:
+                            # Use standard text enhancement
+                            enhanced_img = self.screen_capture.enhance_text_visibility(img)
+                    elif 'read' in self.last_command_context.get('command', '').lower():
                         enhanced_img = self.screen_capture.enhance_text_visibility(img)
                     
                     # Track capture and processing time
@@ -659,7 +1089,12 @@ class AudioLoop:
                         # Convert images to bytes and send to Gemini
                         if is_text_focused and enhanced_img:
                             # Prepare text prompt and enhanced image for text reading
-                            prompt = "This is a screen capture that contains text. I've processed it to make the text more readable. Please focus on reading and interpreting any text visible in the image."
+                            prompt = "This is a screen capture that contains text. "
+                            
+                            if is_medical:
+                                prompt += "This is medical educational content that requires precise reading of terminology. "
+                            
+                            prompt += "I've processed it to make the text more readable. Please focus on reading and interpreting any text visible in the image."
                             
                             # Send text prompt first
                             await self.connect.send(input=prompt)
@@ -779,11 +1214,77 @@ class AudioLoop:
                     
                     # Check for screen reading commands
                     lower_input = user_input.lower()
-                    if any(cmd in lower_input for cmd in ['read this', 'read the text', 'what does it say']):
+                    
+                    # ADHD and medical education specific commands
+                    if 'medical mode' in lower_input or 'usmle mode' in lower_input:
+                        self.is_medical_context = True
+                        print("\nMedical education mode activated. Text processing optimized for medical terminology.")
+                        continue
+                        
+                    elif 'standard mode' in lower_input:
+                        self.is_medical_context = False
+                        print("\nStandard mode activated.")
+                        continue
+                        
+                    elif 'flashcard mode' in lower_input:
+                        self.flashcard_mode = True
+                        print("\nFlashcard mode activated. I'll help you study with flashcards.")
+                        continue
+                        
+                    elif 'next flashcard' in lower_input or 'show question' in lower_input:
+                        # Mark for showing only question part
+                        self.last_command_context = {
+                            'command': user_input,
+                            'command_type': 'show_question',
+                            'timestamp': time.time()
+                        }
+                        print("\nShowcasing question. Answer is hidden.")
+                        continue
+                        
+                    elif 'show answer' in lower_input or 'reveal answer' in lower_input:
+                        # Mark for showing answer part
+                        self.last_command_context = {
+                            'command': user_input,
+                            'command_type': 'show_answer',
+                            'timestamp': time.time()
+                        }
+                        print("\nRevealing answer.")
+                        continue
+                        
+                    # Focus region commands for ADHD support
+                    elif 'focus on' in lower_input:
+                        print("\nSelect region to focus on (format: x,y,width,height):")
+                        region_input = await asyncio.to_thread(input, "")
+                        
+                        try:
+                            coords = [int(x.strip()) for x in region_input.split(',')]
+                            if len(coords) == 4:
+                                self.focus_region = tuple(coords)
+                                print(f"Focus region set to {self.focus_region}")
+                                # Set context for ADHD focus support
+                                self.last_command_context = {
+                                    'command': user_input,
+                                    'command_type': 'focus_region',
+                                    'timestamp': time.time()
+                                }
+                            else:
+                                print("Invalid format. Expected x,y,width,height")
+                        except ValueError:
+                            print("Invalid coordinates. Expected integers.")
+                        continue
+                        
+                    elif 'clear focus' in lower_input or 'reset focus' in lower_input:
+                        self.focus_region = None
+                        print("\nFocus region cleared.")
+                        continue
+                    
+                    # Standard reading commands
+                    elif any(cmd in lower_input for cmd in ['read this', 'read the text', 'what does it say']):
                         # Mark this as a text reading command
                         self.last_command_context = {
                             'command': user_input,
                             'command_type': 'read_text',
+                            'content_type': 'medical' if self.is_medical_context else 'standard',
                             'timestamp': time.time()
                         }
                         
@@ -793,7 +1294,7 @@ class AudioLoop:
                         continue
                     
                     # For region selection commands
-                    if 'focus on region' in lower_input:
+                    elif 'focus on region' in lower_input:
                         print("\nType the coordinates as x,y,width,height or 'reset' to clear region:")
                         region_input = await asyncio.to_thread(input, "")
                         
@@ -813,11 +1314,16 @@ class AudioLoop:
                         continue
                     
                     # Handle help command
-                    if lower_input in ['help', '?', 'commands']:
+                    elif lower_input in ['help', '?', 'commands']:
                         print("\nAvailable commands:")
                         print("- 'read this' or 'what does it say': Read text from the screen")
                         print("- 'focus on region': Select a specific region of the screen")
                         print("- 'reset region': Reset to full screen")
+                        print("- 'medical mode': Optimize for medical content")
+                        print("- 'flashcard mode': Enable flashcard study support")
+                        print("- 'show question'/'show answer': Control flashcard visibility")
+                        print("- 'focus on': Enhance a specific area (for ADHD support)")
+                        print("- 'clear focus': Remove focus enhancement")
                         print("- 'q': Quit the application")
                         continue
                     
@@ -827,20 +1333,16 @@ class AudioLoop:
                             start_time = time.time()
                             await self.connect.send(input=user_input, end_of_turn=True)
                             
-                            # Print text response
-                            response_text = ""
+                            # Process response
                             async for chunk in self.connect.receive():
                                 if chunk.text:
-                                    response_text += chunk.text
-                                elif chunk.tool_call:
+                                    print("\nGemini: ", chunk.text)
+                                    # Update command history
+                                    self.command_history.add_command(user_input, chunk.text[:100], {"type": "text"})
+                                elif hasattr(chunk, 'tool_call'):
                                     await self.handle_tool_call(chunk.tool_call)
                                 elif hasattr(chunk, 'server_content') and hasattr(chunk.server_content, 'interrupted') and chunk.server_content.interrupted:
                                     logger.info("Generation interrupted by user")
-                            
-                            if response_text:
-                                print("\nGemini: ", response_text)
-                                # Update command history
-                                self.command_history.add_command(user_input, response_text[:100], {"type": "text"})
                             
                             # Track response time for performance monitoring
                             self.performance_metrics["api_response_time"].append(time.time() - start_time)
@@ -884,19 +1386,44 @@ class AudioLoop:
                     
                     logger.info(f"Processing function call: {function_name} with args: {function_args}")
                     
-                    # Simplified implementation - in a real app, you would implement actual function handling
-                    result = {"error": "Function not implemented"}
-                    
-                    # Example implementation for a few functions
+                    # Process based on function name
                     if function_name == "get_weather":
-                        result = {"temperature": 72, "condition": "sunny"}
+                        result = {"temperature": 72, "condition": "sunny", "location": function_args.get("location", "unknown")}
                         print(f"\nCalled function: get_weather for {function_args.get('location', 'unknown location')}")
                         print(f"Result: Temperature 72°F, Sunny")
+                        
                     elif function_name == "set_alarm":
                         time_value = function_args.get('time', '00:00')
                         result = {"success": True, "time": time_value}
                         print(f"\nCalled function: set_alarm for {time_value}")
                         print(f"Result: Alarm set for {time_value}")
+                        
+                    # Medical education specific functions
+                    elif function_name == "create_flashcard":
+                        front = function_args.get('front', '')
+                        back = function_args.get('back', '')
+                        category = function_args.get('category', 'General')
+                        
+                        # Create flashcard
+                        self.current_flashcard = {
+                            "front": front,
+                            "back": back,
+                            "category": category
+                        }
+                        
+                        result = {
+                            "success": True,
+                            "flashcard_id": int(time.time()),
+                            "message": "Flashcard created successfully"
+                        }
+                        
+                        print(f"\nCreated flashcard - Category: {category}")
+                        print(f"Front: {front}")
+                        print(f"Back: {back}")
+                    
+                    else:
+                        # Default for unimplemented functions
+                        result = {"error": "Function not implemented"}
                     
                     # Create function response
                     function_responses.append({
@@ -1000,7 +1527,7 @@ class AudioLoop:
         while self.running:
             try:
                 if self.connect:
-                    # Receive stream from the model
+                    # Process each response chunk
                     async for chunk in self.connect.receive():
                         # Check for interruptions
                         if hasattr(chunk, 'server_content') and hasattr(chunk.server_content, 'interrupted'):
@@ -1057,6 +1584,13 @@ class AudioLoop:
                 try:
                     # Get audio data from queue
                     audio_data = await self.audio_in_queue.get()
+                    
+                    # Adjust playback rate for ADHD support if needed
+                    if self.adhd_support_enabled:
+                        # This is a simplified approach - real implementation would use a 
+                        # proper audio processing library to adjust speed without pitch change
+                        # For now, we'll just play at normal rate
+                        pass
                     
                     # Play audio
                     await asyncio.to_thread(stream.write, audio_data)
@@ -1274,6 +1808,13 @@ if __name__ == "__main__":
         type=str,
         help="Log to file instead of console",
     )
+    parser.add_argument(
+        "--adhd-support",
+        type=str,
+        default="enabled",
+        help="Enable ADHD support features",
+        choices=["enabled", "disabled"],
+    )
     
     args = parser.parse_args()
     
@@ -1291,7 +1832,11 @@ if __name__ == "__main__":
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         )
     
+    # Set ADHD support based on argument
+    ADHD_SUPPORT_ENABLED = (args.adhd_support == "enabled")
+    
     logger.info(f"Starting Gemini Voice Reading Assistant in {args.mode} mode")
+    logger.info(f"ADHD support features: {args.adhd_support}")
     
     main = AudioLoop(video_mode=args.mode)
     
