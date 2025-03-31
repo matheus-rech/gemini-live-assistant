@@ -1,5 +1,7 @@
 # Dockerfile for Gemini Voice Reading Assistant
-FROM python:3.10-slim
+
+# Stage 1: Build stage
+FROM python:3.10-slim as build
 
 WORKDIR /app
 
@@ -12,11 +14,9 @@ RUN apt-get update && apt-get install -y \
     libsm6 \
     libxext6 \
     curl \
+    build-essential \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
-# Create logs directory
-RUN mkdir -p /app/logs
 
 # Copy requirements first for better caching
 COPY requirements.txt .
@@ -26,6 +26,21 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py .
 COPY setup.sh run.sh ./
 RUN chmod +x setup.sh run.sh
+
+# Stage 2: Final stage
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Copy installed dependencies from build stage
+COPY --from=build /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+COPY --from=build /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY --from=build /app /app
+
+# Create logs directory
+RUN mkdir -p /app/logs
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

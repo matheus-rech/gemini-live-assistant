@@ -16,6 +16,9 @@ from websockets.exceptions import ConnectionClosedError
 # Import our main app
 from main import AudioLoop, MODEL, SYSTEM_PROMPT
 
+# Import database module
+import sqlite3
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +37,21 @@ running = True
 # Session management
 client_sessions: Dict[str, Dict[str, Any]] = {}
 
+# Database setup
+def setup_database():
+    conn = sqlite3.connect('sessions.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sessions (
+            client_id TEXT PRIMARY KEY,
+            session_data TEXT,
+            last_activity TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+setup_database()
 
 class SessionManager:
     """Manages client sessions and their state."""
@@ -66,6 +84,7 @@ class SessionManager:
             "flashcards": []  # Store flashcards for study sessions
         }
         self.session_timeouts[client_id] = datetime.now().timestamp()
+        self.save_session_to_db(client_id)
         return self.sessions[client_id]
     
     def get_session(self, client_id: str) -> Dict[str, Any]:
@@ -82,6 +101,7 @@ class SessionManager:
         """Update a session parameter."""
         session = self.get_session(client_id)
         session[key] = value
+        self.save_session_to_db(client_id)
     
     def destroy_session(self, client_id: str) -> None:
         """Remove a session."""
@@ -90,6 +110,8 @@ class SessionManager:
         
         if client_id in self.session_timeouts:
             del self.session_timeouts[client_id]
+        
+        self.delete_session_from_db(client_id)
     
     async def cleanup_expired_sessions(self) -> None:
         """Remove expired sessions."""
@@ -151,6 +173,7 @@ class SessionManager:
         
         session["flashcards"].append(flashcard)
         logger.info(f"Added flashcard to session {client_id}: {flashcard.get('front', '')[:30]}...")
+        self.save_session_to_db(client_id)
     
     def get_flashcards(self, client_id: str, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get flashcards for a client, optionally filtered by category."""
@@ -161,6 +184,42 @@ class SessionManager:
             return [f for f in flashcards if f.get("category") == category]
         
         return flashcards
+    
+    def save_session_to_db(self, client_id: str) -> None:
+        """Save session data to the database."""
+        conn = sqlite3.connect('sessions.db')
+        cursor = conn.cursor()
+        session_data = json.dumps(self.sessions[client_id])
+        last_activity = self.sessions[client_id]["last_activity"]
+        cursor.execute('''
+            INSERT OR REPLACE INTO sessions (client_id, session_data, last_activity)
+            VALUES (?, ?, ?)
+        ''', (client_id, session_data, last_activity))
+        conn.commit()
+        conn.close()
+    
+    def load_session_from_db(self, client_id: str) -> Optional[Dict[str, Any]]:
+        """Load session data from the database."""
+        conn = sqlite3.connect('sessions.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT session_data FROM sessions WHERE client_id = ?
+        ''', (client_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return json.loads(row[0])
+        return None
+    
+    def delete_session_from_db(self, client_id: str) -> None:
+        """Delete session data from the database."""
+        conn = sqlite3.connect('sessions.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            DELETE FROM sessions WHERE client_id = ?
+        ''', (client_id,))
+        conn.commit()
+        conn.close()
 
 
 # Create a global session manager

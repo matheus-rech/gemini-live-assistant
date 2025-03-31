@@ -493,7 +493,7 @@ class ScreenCapture:
             logger.error(f"Error detecting text regions: {e}")
             return []
     
-    def detect_content_regions(self, image: Image.Image) -> List[Dict[str, Any]]:
+    def detect_content_regions(self, image: Image.Image) -> List<Dict[str, Any]]:
         """
         Detect and classify content regions in medical study materials.
         
@@ -1846,4 +1846,4 @@ if __name__ == "__main__":
         logger.info("Interrupted by user")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
-        traceback.print_exc()
+        traceback.print.exc()

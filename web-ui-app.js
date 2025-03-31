@@ -15,6 +15,7 @@ const GeminiAssistant = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [streamVideo, setStreamVideo] = useState(false);
   const [error, setError] = useState(null);
+  const [reconnectMessage, setReconnectMessage] = useState(null); // Pa638
   
   // Refs
   const wsRef = useRef(null);
@@ -54,6 +55,7 @@ const GeminiAssistant = () => {
         console.log('WebSocket connected');
         setConnected(true);
         setError(null);
+        setReconnectMessage(null); // Pa638
         reconnectAttemptsRef.current = 0;
         
         // Send initial mode preference to server
@@ -173,6 +175,7 @@ const GeminiAssistant = () => {
           
           if (reconnectAttemptsRef.current <= MAX_RECONNECT_ATTEMPTS) {
             console.log(`Reconnecting in ${RECONNECT_INTERVAL}ms... (Attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
+            setReconnectMessage(`Reconnecting... (Attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`); // Pa638
             setTimeout(connectWebSocket, RECONNECT_INTERVAL);
           } else {
             setError('Failed to reconnect after multiple attempts. Please refresh the page.');
@@ -503,6 +506,12 @@ const GeminiAssistant = () => {
         <div className="error-banner">
           <span>{error}</span>
           <button onClick={() => setError(null)}>Dismiss</button>
+        </div>
+      )}
+      
+      {reconnectMessage && ( // Pa638
+        <div className="reconnect-banner">
+          <span>{reconnectMessage}</span>
         </div>
       )}
       
