@@ -7,6 +7,7 @@ import hashlib
 import argparse
 import io
 import logging
+import json
 from typing import List, Optional, Tuple, Dict, Any, Union
 
 import cv2
@@ -30,7 +31,7 @@ CHANNELS = 1
 SEND_SAMPLE_RATE = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE = 1024
-MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-2.0-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-2.0-flash-exp")  # Updated to exp model
 DEFAULT_MODE = "camera"
 CAPTURE_INTERVAL_MIN = 0.05  # min time between captures (seconds)
 CAPTURE_INTERVAL_MAX = 0.5   # max time between captures (seconds)
@@ -45,7 +46,43 @@ if not API_KEY:
 # Initialize Gemini client with API key
 client = genai.Client(http_options={"api_version": "v1alpha"}, api_key=API_KEY)
 
-# Configure audio response settings
+# Example tool definitions for function calling
+TOOLS = [
+    {
+        "function_declarations": [
+            {
+                "name": "get_weather",
+                "description": "Get the current weather for a location",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": "The city and state, e.g., San Francisco, CA"
+                        }
+                    },
+                    "required": ["location"]
+                }
+            },
+            {
+                "name": "set_alarm",
+                "description": "Set an alarm for a specific time",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "time": {
+                            "type": "string",
+                            "description": "The time to set the alarm for, in HH:MM format"
+                        }
+                    },
+                    "required": ["time"]
+                }
+            }
+        ]
+    }
+]
+
+# Configure audio response settings with tool support
 CONFIG = types.LiveConnectConfig(
     response_modalities=[
         "audio",
@@ -55,6 +92,7 @@ CONFIG = types.LiveConnectConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
         )
     ),
+    tools=TOOLS
 )
 
 # Initialize PyAudio
@@ -464,18 +502,14 @@ class AudioLoop:
         
         for attempt in range(max_retries):
             try:
-                # Initialize LiveConnect session with Gemini model
-                self.connect = await asyncio.to_thread(
-                    client.generate.live_connect, 
+                # Initialize LiveConnect session with Gemini model - updated to use client.aio
+                self.connect = await client.aio.live.connect(
                     model=MODEL,
                     config=CONFIG
                 )
                 
                 # Send initial system prompt
-                response = await asyncio.to_thread(
-                    self.connect.send,
-                    SYSTEM_PROMPT
-                )
+                await self.connect.send(input=SYSTEM_PROMPT)
                 
                 logger.info("Gemini: Ready to help with what you see!")
                 return
@@ -555,16 +589,13 @@ class AudioLoop:
                         
                         # Send to Gemini
                         start_time = time.time()
-                        response = await asyncio.to_thread(
-                            self.connect.send,
-                            part
-                        )
+                        await self.connect.send(input=part)
                         
                         # Track API response time
                         self.performance_metrics["api_response_time"].append(time.time() - start_time)
                         
                         # Print text response
-                        for chunk in response:
+                        async for chunk in self.connect.receive():
                             if chunk.text:
                                 print("\nGemini: ", chunk.text)
                                 # Update command history
@@ -631,10 +662,7 @@ class AudioLoop:
                             prompt = "This is a screen capture that contains text. I've processed it to make the text more readable. Please focus on reading and interpreting any text visible in the image."
                             
                             # Send text prompt first
-                            await asyncio.to_thread(
-                                self.connect.send,
-                                prompt
-                            )
+                            await self.connect.send(input=prompt)
                             
                             # Convert enhanced image to bytes
                             img_byte_arr = io.BytesIO()
@@ -645,20 +673,14 @@ class AudioLoop:
                             part = types.Part.blob(img_bytes, 'image/png')
                             
                             # Send enhanced image
-                            response = await asyncio.to_thread(
-                                self.connect.send,
-                                part
-                            )
+                            await self.connect.send(input=part)
                             
                         elif enhanced_img:
                             # Send both original and enhanced images with explanation
                             prompt = "This is a screen capture. I'm including both the original image and an enhanced version to help you read any text. Please focus on any text content when responding."
                             
                             # Send text prompt first
-                            await asyncio.to_thread(
-                                self.connect.send,
-                                prompt
-                            )
+                            await self.connect.send(input=prompt)
                             
                             # Send original image
                             img_byte_arr = io.BytesIO()
@@ -666,10 +688,7 @@ class AudioLoop:
                             img_bytes = img_byte_arr.getvalue()
                             img_part = types.Part.blob(img_bytes, 'image/png')
                             
-                            await asyncio.to_thread(
-                                self.connect.send,
-                                img_part
-                            )
+                            await self.connect.send(input=img_part)
                             
                             # Send enhanced image
                             enhanced_byte_arr = io.BytesIO()
@@ -677,10 +696,7 @@ class AudioLoop:
                             enhanced_bytes = enhanced_byte_arr.getvalue()
                             enhanced_part = types.Part.blob(enhanced_bytes, 'image/png')
                             
-                            response = await asyncio.to_thread(
-                                self.connect.send,
-                                enhanced_part
-                            )
+                            await self.connect.send(input=enhanced_part)
                             
                         else:
                             # Standard image capture
@@ -689,14 +705,11 @@ class AudioLoop:
                             img_bytes = img_byte_arr.getvalue()
                             part = types.Part.blob(img_bytes, 'image/png')
                             
-                            response = await asyncio.to_thread(
-                                self.connect.send,
-                                part
-                            )
+                            await self.connect.send(input=part)
                         
                         # Print text response
                         response_text = ""
-                        for chunk in response:
+                        async for chunk in self.connect.receive():
                             if chunk.text:
                                 response_text += chunk.text
                         
@@ -812,16 +825,17 @@ class AudioLoop:
                     if self.connect:
                         try:
                             start_time = time.time()
-                            response = await asyncio.to_thread(
-                                self.connect.send,
-                                user_input
-                            )
+                            await self.connect.send(input=user_input, end_of_turn=True)
                             
                             # Print text response
                             response_text = ""
-                            for chunk in response:
+                            async for chunk in self.connect.receive():
                                 if chunk.text:
                                     response_text += chunk.text
+                                elif chunk.tool_call:
+                                    await self.handle_tool_call(chunk.tool_call)
+                                elif hasattr(chunk, 'server_content') and hasattr(chunk.server_content, 'interrupted') and chunk.server_content.interrupted:
+                                    logger.info("Generation interrupted by user")
                             
                             if response_text:
                                 print("\nGemini: ", response_text)
@@ -851,101 +865,88 @@ class AudioLoop:
             self.running = False
 
     # ---------------------------
+    # Function Calling Handling
+    # ---------------------------
+    async def handle_tool_call(self, tool_call):
+        """Handle tool calls from the model."""
+        try:
+            logger.info(f"Received tool call: {tool_call}")
+            
+            function_calls = tool_call.function_calls if hasattr(tool_call, 'function_calls') else []
+            function_responses = []
+            
+            for call in function_calls:
+                try:
+                    # Extract function information
+                    function_name = call.name if hasattr(call, 'name') else ""
+                    function_args = json.loads(call.args) if hasattr(call, 'args') else {}
+                    function_id = call.id if hasattr(call, 'id') else ""
+                    
+                    logger.info(f"Processing function call: {function_name} with args: {function_args}")
+                    
+                    # Simplified implementation - in a real app, you would implement actual function handling
+                    result = {"error": "Function not implemented"}
+                    
+                    # Example implementation for a few functions
+                    if function_name == "get_weather":
+                        result = {"temperature": 72, "condition": "sunny"}
+                        print(f"\nCalled function: get_weather for {function_args.get('location', 'unknown location')}")
+                        print(f"Result: Temperature 72°F, Sunny")
+                    elif function_name == "set_alarm":
+                        time_value = function_args.get('time', '00:00')
+                        result = {"success": True, "time": time_value}
+                        print(f"\nCalled function: set_alarm for {time_value}")
+                        print(f"Result: Alarm set for {time_value}")
+                    
+                    # Create function response
+                    function_responses.append({
+                        "name": function_name,
+                        "response": json.dumps(result),
+                        "id": function_id
+                    })
+                    
+                    logger.info(f"Function {function_name} returned: {result}")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing function call {call}: {e}")
+                    # Still provide a response for this function
+                    function_responses.append({
+                        "name": call.name if hasattr(call, 'name') else "unknown",
+                        "response": json.dumps({"error": str(e)}),
+                        "id": call.id if hasattr(call, 'id') else "unknown"
+                    })
+            
+            # Send function responses back to model
+            if function_responses and self.connect:
+                await self.connect.send_tool_response(function_responses=function_responses)
+                logger.info(f"Sent {len(function_responses)} function responses back to model")
+                
+        except Exception as e:
+            logger.error(f"Error handling tool call: {e}")
+            traceback.print_exc()
+
+    # ---------------------------
     # Audio Handling
     # ---------------------------
     async def send_realtime(self):
-        """Stream audio to Gemini with improved voice detection and error handling."""
+        """Stream audio to Gemini leveraging API's built-in VAD."""
         try:
-            # Buffer for collecting audio chunks
-            audio_buffer = []
-            is_speaking = False
-            silence_count = 0
             consecutive_errors = 0
-            
-            # Adaptive silence threshold
-            SILENCE_THRESHOLD = 500  # Initial value, will be adjusted based on environment
-            background_noise = []
             
             while self.running:
                 if self.audio_stream:
                     # Read audio chunk
                     try:
                         data = self.audio_stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                        consecutive_errors = 0  # Reset error counter on successful read
                         
-                        # Convert to numpy array for analysis
-                        audio_array = np.frombuffer(data, dtype=np.int16)
-                        
-                        # Calculate volume
-                        volume = np.abs(audio_array).mean()
-                        
-                        # Calibrate background noise if we have few samples
-                        if len(background_noise) < 10 and not is_speaking:
-                            background_noise.append(volume)
-                            if len(background_noise) == 10:
-                                # Set threshold above background noise
-                                bg_mean = sum(background_noise) / len(background_noise)
-                                SILENCE_THRESHOLD = max(500, bg_mean * 2.5)
-                                logger.info(f"Calibrated silence threshold: {SILENCE_THRESHOLD}")
-                        
-                        if volume > SILENCE_THRESHOLD:
-                            # Reset silence counter when sound detected
-                            silence_count = 0
-                            consecutive_errors = 0  # Reset error counter on successful read
+                        # Send audio data directly to Gemini - it will handle VAD internally
+                        if self.connect:
+                            # LiveConnect supports audio input
+                            audio_part = types.Part.audio(data, mime_type="audio/raw;encoding=signed-integer;bits_per_sample=16;sample_rate=16000")
                             
-                            if not is_speaking:
-                                is_speaking = True
-                                print("\nListening...")
-                            
-                            # Add to buffer
-                            audio_buffer.append(data)
-                            
-                        elif is_speaking:
-                            # Still add some silence for natural pauses
-                            audio_buffer.append(data)
-                            silence_count += 1
-                            
-                            # If silence persists, assume speaking ended
-                            if silence_count > 20:  # About 0.5 seconds of silence
-                                is_speaking = False
-                                
-                                # Process collected audio
-                                if audio_buffer and self.connect:
-                                    print("Processing audio...")
-                                    
-                                    # Combine audio chunks
-                                    audio_data = b''.join(audio_buffer)
-                                    
-                                    try:
-                                        # LiveConnect supports audio input
-                                        audio_part = types.Part.audio(audio_data, mime_type="audio/raw;encoding=signed-integer;bits_per_sample=16;sample_rate=16000")
-                                        
-                                        # Send audio to Gemini
-                                        start_time = time.time()
-                                        response = await asyncio.to_thread(
-                                            self.connect.send,
-                                            audio_part
-                                        )
-                                        
-                                        # Print text response
-                                        response_text = ""
-                                        for chunk in response:
-                                            if chunk.text:
-                                                response_text += chunk.text
-                                        
-                                        if response_text:
-                                            print("\nGemini: ", response_text)
-                                            # Update command history
-                                            self.command_history.add_command("Voice input", response_text[:100], {"type": "voice"})
-                                            
-                                        # Track response time for performance monitoring
-                                        self.performance_metrics["api_response_time"].append(time.time() - start_time)
-                                            
-                                    except Exception as e:
-                                        logger.error(f"Error sending audio to Gemini: {e}")
-                                        self.performance_metrics["api_errors"] += 1
-                                
-                                # Clear buffer for next utterance
-                                audio_buffer = []
+                            # Send audio to Gemini without waiting for completion
+                            await self.connect.send(input=audio_part, end_of_turn=False)
                     
                     except Exception as e:
                         consecutive_errors += 1
@@ -992,20 +993,85 @@ class AudioLoop:
     
     async def receive_audio(self):
         """
-        Audio responses are handled automatically by LiveConnect.
-        This is a placeholder for compatibility and for handling special cases.
+        Handle audio responses from Gemini with improved interruption support.
         """
+        self.audio_in_queue = asyncio.Queue()  # For compatibility
+        
         while self.running:
-            await asyncio.sleep(1.0)
+            try:
+                if self.connect:
+                    # Receive stream from the model
+                    async for chunk in self.connect.receive():
+                        # Check for interruptions
+                        if hasattr(chunk, 'server_content') and hasattr(chunk.server_content, 'interrupted'):
+                            if chunk.server_content.interrupted:
+                                logger.info("Generation interrupted by user")
+                                # Clear audio buffers to stop playback immediately
+                                while not self.audio_in_queue.empty():
+                                    try:
+                                        self.audio_in_queue.get_nowait()
+                                    except:
+                                        pass
+                                
+                                # If any function calls were canceled, log them
+                                if hasattr(chunk.server_content, 'cancelled_tool_calls'):
+                                    cancelled_ids = chunk.server_content.cancelled_tool_calls
+                                    logger.info(f"Function calls cancelled due to interruption: {cancelled_ids}")
+                                
+                                continue
+                        
+                        # Process audio data
+                        if chunk.data:
+                            await self.audio_in_queue.put(chunk.data)
+                        
+                        # Process text response
+                        if chunk.text:
+                            print("\nGemini: ", chunk.text)
+                            # Update command history
+                            self.command_history.add_command("Response", chunk.text[:100], {"type": "response"})
+                        
+                        # Process tool calls
+                        if hasattr(chunk, 'tool_call'):
+                            await self.handle_tool_call(chunk.tool_call)
+            except Exception as e:
+                logger.error(f"Error in receive_audio: {e}")
+                await asyncio.sleep(1.0)
     
     async def play_audio(self):
         """
-        Audio playback is handled automatically by LiveConnect.
-        This is a placeholder for compatibility and for handling special cases.
+        Audio playback for responses from Gemini.
         """
-        self.audio_in_queue = asyncio.Queue()  # For compatibility
-        while self.running:
-            await asyncio.sleep(1.0)
+        self.audio_in_queue = asyncio.Queue()  # Initialize if not already done
+        
+        try:
+            # Open output stream
+            stream = await asyncio.to_thread(
+                pya.open,
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RECEIVE_SAMPLE_RATE,
+                output=True,
+            )
+            
+            while self.running:
+                try:
+                    # Get audio data from queue
+                    audio_data = await self.audio_in_queue.get()
+                    
+                    # Play audio
+                    await asyncio.to_thread(stream.write, audio_data)
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in audio playback: {e}")
+                    await asyncio.sleep(0.1)
+            
+            # Clean up
+            stream.close()
+            
+        except Exception as e:
+            logger.error(f"Error setting up audio playback: {e}")
+            traceback.print_exc()
 
     # ---------------------------
     # Performance Monitor
