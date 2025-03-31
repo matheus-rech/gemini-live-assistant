@@ -58,8 +58,12 @@ class SessionManager:
             "user_preferences": {
                 "voice": "Puck",  # Default voice
                 "region": None,  # For screen capture region
-                "mode": "camera"  # Default mode
-            }
+                "mode": "camera",  # Default mode
+                "adhd_support": True,  # Enable ADHD support by default
+                "is_medical_context": False,  # Medical content flag
+                "reading_pace": "moderate"  # Reading pace for ADHD support
+            },
+            "flashcards": []  # Store flashcards for study sessions
         }
         self.session_timeouts[client_id] = datetime.now().timestamp()
         return self.sessions[client_id]
@@ -131,6 +135,32 @@ class SessionManager:
             return False
         
         return True
+    
+    def add_flashcard(self, client_id: str, flashcard: Dict[str, Any]) -> None:
+        """Add a flashcard to the user's collection."""
+        session = self.get_session(client_id)
+        if "flashcards" not in session:
+            session["flashcards"] = []
+        
+        # Add an ID to the flashcard
+        if "id" not in flashcard:
+            flashcard["id"] = str(len(session["flashcards"]) + 1)
+            
+        # Add timestamp
+        flashcard["created_at"] = datetime.now().isoformat()
+        
+        session["flashcards"].append(flashcard)
+        logger.info(f"Added flashcard to session {client_id}: {flashcard.get('front', '')[:30]}...")
+    
+    def get_flashcards(self, client_id: str, category: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get flashcards for a client, optionally filtered by category."""
+        session = self.get_session(client_id)
+        flashcards = session.get("flashcards", [])
+        
+        if category:
+            return [f for f in flashcards if f.get("category") == category]
+        
+        return flashcards
 
 
 # Create a global session manager
@@ -147,6 +177,11 @@ class WebSocketAudioLoop(AudioLoop):
         self.session = session_manager.get_session(self.client_id)
         self.token = None
         self.last_error_time = 0  # To limit error message frequency
+        
+        # Initialize ADHD support settings from session
+        self.adhd_support_enabled = self.session["user_preferences"].get("adhd_support", True)
+        self.is_medical_context = self.session["user_preferences"].get("is_medical_context", False)
+        self.reading_pace = self.session["user_preferences"].get("reading_pace", "moderate")
     
     # Override methods to work with WebSocket
     async def send_response(self, text: str, message_type: str = "text", extra_data: Optional[Dict[str, Any]] = None) -> None:
@@ -180,6 +215,42 @@ class WebSocketAudioLoop(AudioLoop):
                     "timestamp": datetime.now().isoformat()
                 })
             
+            # Check for specific commands related to ADHD and medical support
+            lower_text = text.lower()
+            
+            # Handle educational mode commands
+            if 'medical mode' in lower_text or 'usmle mode' in lower_text:
+                self.is_medical_context = True
+                self.session["user_preferences"]["is_medical_context"] = True
+                await self.send_response("Medical education mode activated. Text processing optimized for medical terminology.", "status")
+                return
+                
+            elif 'standard mode' in lower_text:
+                self.is_medical_context = False
+                self.session["user_preferences"]["is_medical_context"] = False
+                await self.send_response("Standard mode activated.", "status")
+                return
+                
+            elif 'flashcard mode' in lower_text:
+                self.flashcard_mode = True
+                await self.send_response("Flashcard mode activated. I'll help you study with flashcards.", "status")
+                return
+                
+            elif 'adjust reading pace' in lower_text:
+                if 'slow' in lower_text:
+                    self.reading_pace = "slow"
+                    self.session["user_preferences"]["reading_pace"] = "slow"
+                    await self.send_response("Reading pace adjusted to slow.", "status")
+                elif 'fast' in lower_text:
+                    self.reading_pace = "fast"
+                    self.session["user_preferences"]["reading_pace"] = "fast"
+                    await self.send_response("Reading pace adjusted to fast.", "status")
+                else:
+                    self.reading_pace = "moderate"
+                    self.session["user_preferences"]["reading_pace"] = "moderate"
+                    await self.send_response("Reading pace adjusted to moderate.", "status")
+                return
+                
             # Send status update to client
             await self.send_response("Processing your message...", "status")
             
@@ -232,6 +303,17 @@ class WebSocketAudioLoop(AudioLoop):
             # Send status update to client
             await self.send_response("Analyzing image...", "status")
             
+            # For medical content, add special preprocessing
+            if self.is_medical_context:
+                # Apply medical text enhancement if needed
+                if self.last_command_context.get('command_type') == 'read_text':
+                    image = self.screen_capture.enhance_medical_text(image)
+                    await self.send_response("Applied specialized medical text enhancement.", "status")
+            
+            # Apply focus enhancement if needed for ADHD support
+            if self.adhd_support_enabled and self.focus_region:
+                image = self.screen_capture.enhance_focus_region(image, self.focus_region)
+            
             # Convert to Part object
             import io
             from google.genai import types
@@ -249,6 +331,14 @@ class WebSocketAudioLoop(AudioLoop):
                 
             # Send to model
             start_time = datetime.now().timestamp()
+            
+            # Add context about medical content if needed
+            if self.is_medical_context:
+                context = "This is medical educational content for USMLE study. "
+                if self.last_command_context.get('command_type') == 'read_text':
+                    context += "Please read the medical text precisely, maintaining accuracy of all terminology."
+                await self.connect.send(input=context)
+            
             await self.connect.send(input=part, end_of_turn=True)
             
             # Process response
@@ -339,6 +429,35 @@ class WebSocketAudioLoop(AudioLoop):
                 logger.warning("Received empty tool call")
                 return
             
+            # Check for medical education specific tool calls
+            for call in function_calls:
+                # Get function details
+                function_name = call.name if hasattr(call, 'name') else call.get('name', '')
+                args = call.args if hasattr(call, 'args') else call.get('args', '{}')
+                function_id = call.id if hasattr(call, 'id') else call.get('id', '')
+                
+                # Handle flashcard creation
+                if function_name == "create_flashcard":
+                    try:
+                        args_dict = json.loads(args)
+                        flashcard = {
+                            "front": args_dict.get("front", ""),
+                            "back": args_dict.get("back", ""),
+                            "category": args_dict.get("category", "General")
+                        }
+                        
+                        # Store flashcard in session
+                        session_manager.add_flashcard(self.client_id, flashcard)
+                        
+                        # Notify user about the flashcard
+                        await self.send_response(
+                            f"Created flashcard in category: {flashcard['category']}", 
+                            "flashcard_created",
+                            {"flashcard": flashcard}
+                        )
+                    except Exception as e:
+                        logger.error(f"Error processing flashcard creation: {e}")
+            
             # Send tool call to client
             await self.websocket.send(json.dumps({
                 "type": "tool_call",
@@ -352,9 +471,6 @@ class WebSocketAudioLoop(AudioLoop):
                     ]
                 }
             }))
-            
-            # Client will respond with tool_response message type
-            # This will be handled in the process_message function
             
         except Exception as e:
             logger.error(f"Error processing tool call: {e}")
@@ -415,7 +531,7 @@ async def handle_client(websocket: WebSocketServerProtocol, path: str) -> None:
             break
         except Exception as e:
             if attempt < max_retries - 1:
-                logger.warning(f"Failed to initialize Gemini session (attempt {attempt + 1}/{max_retries}): {e}")
+                logger.warning(f"Failed to initialize Gemini session (attempt {attempt+1}/{max_retries}): {e}")
                 await asyncio.sleep(1 * (2 ** attempt))  # Exponential backoff
             else:
                 logger.error(f"Failed to initialize Gemini session after {max_retries} attempts: {e}")
@@ -587,6 +703,85 @@ async def process_message(websocket: WebSocketServerProtocol, data: Dict[str, An
         await websocket.send(json.dumps({
             "type": "status",
             "content": f"Screen region set to {region}" if region else "Screen region reset to full screen"
+        }))
+    
+    elif msg_type == 'focus_region':
+        # Set focus region for ADHD support
+        logger.info(f"Client {client_id} setting ADHD focus region")
+        
+        # Parse region data (x, y, width, height)
+        region = content
+        
+        # Update client app
+        client_app.focus_region = region
+        
+        # Update user preferences in session
+        if "user_preferences" in session:
+            session["user_preferences"]["focus_region"] = region
+        
+        await websocket.send(json.dumps({
+            "type": "status",
+            "content": "Focus region set for ADHD support"
+        }))
+    
+    elif msg_type == 'adhd_settings':
+        # Update ADHD support settings
+        logger.info(f"Client {client_id} updating ADHD settings")
+        
+        settings = content
+        if isinstance(settings, dict):
+            # Update client app settings
+            if "enabled" in settings:
+                client_app.adhd_support_enabled = settings["enabled"]
+                session["user_preferences"]["adhd_support"] = settings["enabled"]
+            
+            if "reading_pace" in settings:
+                client_app.reading_pace = settings["reading_pace"]
+                session["user_preferences"]["reading_pace"] = settings["reading_pace"]
+            
+            await websocket.send(json.dumps({
+                "type": "status",
+                "content": "ADHD support settings updated"
+            }))
+    
+    elif msg_type == 'flashcard_request':
+        # Handle flashcard requests
+        action = content.get('action', '')
+        
+        if action == 'list':
+            # Return flashcard list
+            category = content.get('category')
+            flashcards = session_manager.get_flashcards(client_id, category)
+            
+            await websocket.send(json.dumps({
+                "type": "flashcards",
+                "content": flashcards
+            }))
+        
+        elif action == 'add':
+            # Add a new flashcard
+            flashcard = content.get('flashcard', {})
+            if flashcard and 'front' in flashcard and 'back' in flashcard:
+                session_manager.add_flashcard(client_id, flashcard)
+                
+                await websocket.send(json.dumps({
+                    "type": "status",
+                    "content": "Flashcard added successfully"
+                }))
+    
+    elif msg_type == 'medical_mode':
+        # Set medical education mode
+        is_medical = content.get('enabled', False)
+        client_app.is_medical_context = is_medical
+        
+        # Update user preferences in session
+        if "user_preferences" in session:
+            session["user_preferences"]["is_medical_context"] = is_medical
+        
+        mode_name = "Medical education mode" if is_medical else "Standard mode"
+        await websocket.send(json.dumps({
+            "type": "status",
+            "content": f"{mode_name} {'activated' if is_medical else 'deactivated'}"
         }))
     
     elif msg_type == 'ping':
