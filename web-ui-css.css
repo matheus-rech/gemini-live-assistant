@@ -17,6 +17,7 @@
   --user-msg-bg: #1a3a6c;
   --assistant-msg-bg: #2d2d2d;
   --system-msg-bg: #333333;
+  --function-msg-bg: #1e3245;
 }
 
 * {
@@ -199,6 +200,25 @@ button.active {
   text-align: center;
 }
 
+/* Function call styling */
+.message.function {
+  background-color: var(--function-msg-bg);
+  border-left: 3px solid var(--accent-color);
+  font-family: monospace;
+  max-width: 90%;
+}
+
+.function-icon {
+  display: inline-block;
+  margin-right: 8px;
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
 /* Video container */
 .video-container {
   flex: 2;
@@ -344,11 +364,6 @@ video.hidden {
   border-top: 3px solid transparent;
   border-radius: 50%;
   animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
 }
 
 /* Icons */
