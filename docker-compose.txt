@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  gemini-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gemini-voice-assistant
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-models/gemini-2.0-flash}
+      - TZ=UTC
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  web-client:
+    build:
+      context: ./web-client
+      dockerfile: Dockerfile
+    container_name: gemini-voice-assistant-web
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    environment:
+      - REACT_APP_WS_URL=ws://localhost:8000
+    depends_on:
+      - gemini-assistant
+
+networks:
+  default:
+    name: gemini-assistant-network

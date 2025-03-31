@@ -1,0 +1,13 @@
+# Gemini API Settings
+GEMINI_API_KEY=your_api_key_here
+GEMINI_MODEL=models/gemini-2.0-flash
+
+# Server Settings
+HOST=0.0.0.0
+PORT=8000
+
+# Logging
+LOG_LEVEL=INFO
+
+# UI Settings (Web Client)
+REACT_APP_WS_URL=ws://localhost:8000
