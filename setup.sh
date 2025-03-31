@@ -40,20 +40,21 @@ elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
         echo "Installing dependencies with apt..."
         sudo apt-get update
         sudo apt-get install -y portaudio19-dev libopencv-dev python3-opencv ffmpeg \
-                            libsm6 libxext6 libgl1-mesa-glx
+                            libsm6 libxext6 libgl1-mesa-glx curl
     # Check for dnf (Fedora/RHEL)
     elif command -v dnf &> /dev/null; then
         echo "Installing dependencies with dnf..."
-        sudo dnf install -y portaudio-devel opencv-devel ffmpeg-devel
+        sudo dnf install -y portaudio-devel opencv-devel ffmpeg-devel curl
     # Check for pacman (Arch Linux)
     elif command -v pacman &> /dev/null; then
         echo "Installing dependencies with pacman..."
-        sudo pacman -S portaudio opencv ffmpeg
+        sudo pacman -S portaudio opencv ffmpeg curl
     else
         echo "Warning: Unable to detect package manager. Please install required dependencies manually:"
         echo "  - PortAudio development libraries"
         echo "  - OpenCV development libraries"
         echo "  - FFmpeg"
+        echo "  - cURL"
     fi
     
 else
@@ -63,6 +64,7 @@ else
     echo "  - PortAudio development libraries"
     echo "  - OpenCV development libraries"
     echo "  - FFmpeg"
+    echo "  - cURL"
 fi
 
 # Create virtual environment (optional)
@@ -99,8 +101,28 @@ if [ -z "$GEMINI_API_KEY" ]; then
         echo "Creating .env file for environment variables..."
         echo "# Add your API key here" > .env
         echo "GEMINI_API_KEY=" >> .env
-        echo "GEMINI_MODEL=models/gemini-2.0-flash" >> .env
+        echo "GEMINI_MODEL=models/gemini-2.0-flash-exp" >> .env
         echo ".env file created. Please add your API key there."
+    fi
+fi
+
+# Set up web client if it exists
+if [ -d "web-client" ]; then
+    echo "Setting up web client..."
+    
+    # Check for Node.js
+    if command -v node &> /dev/null; then
+        echo "Node.js detected, installing web client dependencies..."
+        cd web-client
+        if command -v npm &> /dev/null; then
+            npm install
+            cd ..
+        else
+            echo "Warning: npm not found. Please install npm to build the web client."
+            cd ..
+        fi
+    else
+        echo "Warning: Node.js not found. Please install Node.js to build the web client."
     fi
 fi
 
@@ -109,3 +131,11 @@ echo "Setup complete! You can now run the application with:"
 echo "./run.sh"
 echo ""
 echo "For more options, run: ./run.sh --help"
+
+# Provide Docker instructions if Docker is available
+if command -v docker &> /dev/null && command -v docker-compose &> /dev/null; then
+    echo ""
+    echo "Docker and Docker Compose detected. To run with Docker:"
+    echo "1. Make sure your .env file contains your GEMINI_API_KEY"
+    echo "2. Run: docker-compose up"
+fi
