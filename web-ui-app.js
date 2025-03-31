@@ -104,6 +104,59 @@ const GeminiAssistant = () => {
             setError(data.content);
             setIsProcessing(false);
             break;
+          
+          case 'tool_call':
+            console.log('Tool call from assistant:', data.content);
+            
+            // Process each function call
+            if (data.content && data.content.function_calls) {
+                const functionResponses = data.content.function_calls.map(call => {
+                    // Here we're providing a simple implementation - in a real app, 
+                    // you would implement actual function handling
+                    let result = { error: "Function not implemented" };
+                    let args = {};
+                    
+                    try {
+                        args = JSON.parse(call.args);
+                    } catch (e) {
+                        console.error('Error parsing function args:', e);
+                    }
+                    
+                    // Example implementation for a few functions
+                    if (call.name === "get_weather") {
+                        result = { temperature: 72, condition: "sunny", location: args.location || "unknown" };
+                    } else if (call.name === "search_web") {
+                        result = { results: ["Result 1", "Result 2", "Result 3"] };
+                    } else if (call.name === "set_alarm") {
+                        result = { success: true, time: args.time || "00:00" };
+                    }
+                    
+                    // Add message to UI to show function was called
+                    setMessages(prevMessages => [
+                        ...prevMessages, 
+                        { 
+                            role: 'system', 
+                            content: `Function called: ${call.name}${args.location ? ` for ${args.location}` : ''}${args.time ? ` at ${args.time}` : ''}`, 
+                            type: 'function' 
+                        }
+                    ]);
+                    
+                    return {
+                        id: call.id,
+                        name: call.name,
+                        response: JSON.stringify(result)
+                    };
+                });
+                
+                // Send responses back to server
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify({
+                        type: 'tool_response',
+                        content: functionResponses
+                    }));
+                }
+            }
+            break;
             
           default:
             console.log('Unknown message type:', data.type);
@@ -413,6 +466,29 @@ const GeminiAssistant = () => {
     );
   };
 
+  // Custom message rendering based on message type
+  const renderMessage = (msg, index) => {
+    // Special rendering for function messages
+    if (msg.type === 'function') {
+      return (
+        <div key={index} className="message system function">
+          <div className="message-content">
+            <span className="function-icon">⚙️</span> {msg.content}
+          </div>
+        </div>
+      );
+    }
+    
+    // Default message rendering
+    return (
+      <div key={index} className={`message ${msg.role}`}>
+        <div className="message-content">
+          {msg.content}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="gemini-assistant">
       <header className="assistant-header">
@@ -440,13 +516,7 @@ const GeminiAssistant = () => {
             </div>
           ) : (
             <div className="messages-list">
-              {messages.map((msg, index) => (
-                <div key={index} className={`message ${msg.role}`}>
-                  <div className="message-content">
-                    {msg.content}
-                  </div>
-                </div>
-              ))}
+              {messages.map((msg, index) => renderMessage(msg, index))}
               <div ref={messagesEndRef} />
             </div>
           )}
