@@ -18,6 +18,11 @@
   --assistant-msg-bg: #2d2d2d;
   --system-msg-bg: #333333;
   --function-msg-bg: #1e3245;
+  --medical-color: #1976d2;
+  --flashcard-bg: #263238;
+  --flashcard-border: #455a64;
+  --adhd-support-bg: #1a237e;
+  --adhd-support-accent: #5c6bc0;
 }
 
 * {
@@ -106,6 +111,155 @@ button.active {
   background-color: var(--error-color);
 }
 
+/* Educational Controls */
+.educational-controls {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.educational-controls button {
+  flex: 1;
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-color);
+  transition: all 0.3s ease;
+}
+
+.educational-controls button.active {
+  background-color: var(--medical-color);
+  border-color: var(--medical-color);
+}
+
+/* ADHD Support Panel */
+.adhd-support-panel {
+  background-color: var(--adhd-support-bg);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 12px;
+  animation: fadeIn 0.3s ease;
+}
+
+.adhd-support-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.adhd-support-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.adhd-support-controls input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.reading-pace-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reading-pace-control select {
+  padding: 6px;
+  border-radius: 4px;
+  background-color: var(--input-bg);
+  color: var(--light-text);
+  border: 1px solid var(--border-color);
+}
+
+.focus-region-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.adhd-tips {
+  background-color: var(--adhd-support-accent);
+  border-radius: 4px;
+  padding: 12px;
+  margin-top: 12px;
+  font-size: 0.9rem;
+}
+
+.adhd-tips h4 {
+  margin-bottom: 8px;
+}
+
+.adhd-tips ul {
+  padding-left: 20px;
+  margin: 0;
+}
+
+.adhd-tips li {
+  margin-bottom: 4px;
+}
+
+/* Flashcard Interface */
+.flashcard-interface {
+  background-color: var(--flashcard-bg);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 12px;
+  animation: slideDown 0.4s ease;
+}
+
+.flashcard {
+  border: 1px solid var(--flashcard-border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.flashcard-front,
+.flashcard-back {
+  margin-bottom: 16px;
+}
+
+.flashcard-front h3,
+.flashcard-back h3 {
+  margin-bottom: 8px;
+  font-size: 1.2rem;
+  color: var(--accent-color);
+}
+
+.flashcard-controls {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.flashcard-empty {
+  text-align: center;
+  padding: 24px;
+}
+
+.flashcard-empty p {
+  margin-bottom: 16px;
+  opacity: 0.8;
+}
+
+/* Region selector */
+.region-selector {
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  background-color: #000;
+}
+
+.confirm-region-button {
+  background-color: var(--success-color);
+}
+
+.confirm-region-button:hover {
+  background-color: #388e3c;
+}
+
 /* Error banner */
 .error-banner {
   background-color: var(--error-color);
@@ -162,6 +316,15 @@ button.active {
 .welcome-message p {
   margin-bottom: 8px;
   opacity: 0.8;
+}
+
+.welcome-message .medical-tip {
+  margin-top: 16px;
+  color: var(--medical-color);
+  font-weight: bold;
+  border: 1px solid var(--medical-color);
+  padding: 8px 16px;
+  border-radius: 4px;
 }
 
 .messages-list {
@@ -400,6 +563,23 @@ video.hidden {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='white' viewBox='0 0 24 24'%3E%3Cpath d='M2.01 21L23 12 2.01 3 2 10l15 2-15 2z'/%3E%3C/svg%3E");
 }
 
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideDown {
+  from { 
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+  to { 
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
 /* Responsive Design */
 @media (max-width: 768px) {
   .main-container {
@@ -425,6 +605,23 @@ video.hidden {
   .input-container form {
     width: 100%;
   }
+  
+  .voice-button {
+    width: 100%;
+  }
+  
+  .educational-controls {
+    flex-direction: column;
+  }
+  
+  .adhd-support-controls {
+    flex-direction: column;
+  }
+  
+  .flashcard-controls {
+    flex-direction: column;
+  }
+}
   
   .voice-button {
     width: 100%;
